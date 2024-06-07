@@ -80,7 +80,7 @@ class BlockwiseSpec:
 
 def apply_blockwise(out_coords: List[int], *, config: BlockwiseSpec) -> None:
     """Stage function for blockwise."""
-    id = os.environ['__LITHOPS_SESSION_ID']
+    #id = os.environ['__LITHOPS_SESSION_ID']
     print(id)
     bw_st = time.time()
     # lithops needs params to be lists not tuples, so convert back
