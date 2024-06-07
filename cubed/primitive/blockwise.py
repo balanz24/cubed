@@ -28,6 +28,11 @@ from cubed.utils import (
 from cubed.vendor.dask.array.core import normalize_chunks
 from cubed.vendor.dask.blockwise import _get_coord_mapping, _make_dims, lol_product
 from cubed.vendor.dask.core import flatten
+import time
+import pickle
+from lithops import Storage
+import os
+import numpy as np
 
 from .types import CubedArrayProxy, MemoryModeller, PrimitiveOperation
 
@@ -75,6 +80,9 @@ class BlockwiseSpec:
 
 def apply_blockwise(out_coords: List[int], *, config: BlockwiseSpec) -> None:
     """Stage function for blockwise."""
+    id = os.environ['__LITHOPS_SESSION_ID']
+    print(id)
+    bw_st = time.time()
     # lithops needs params to be lists not tuples, so convert back
     out_coords_tuple = tuple(out_coords)
     out_chunk_key = key_to_slices(
@@ -86,11 +94,20 @@ def apply_blockwise(out_coords: List[int], *, config: BlockwiseSpec) -> None:
     get_chunk_config = partial(get_chunk, config=config)
     out_key = ("out",) + out_coords_tuple  # array name is ignored by key_function
     in_keys = config.key_function(out_key)
+    r_st = time.time()
     for in_key in in_keys:
         arg = map_nested(get_chunk_config, in_key)
         args.append(arg)
+    r_et = time.time() - r_st
 
+    # if not isinstance(args[0], np.ndarray):
+    #     print('partial')
+    # print(f'config: {config}')
+    # print(f'in_keys: {in_keys}')
+    # print(args)
     result = config.function(*args)
+    
+    w_st = time.time()
     if isinstance(result, dict):  # structured array with named fields
         for k, v in result.items():
             v = backend_array_to_numpy_array(v)
@@ -98,6 +115,22 @@ def apply_blockwise(out_coords: List[int], *, config: BlockwiseSpec) -> None:
     else:
         result = backend_array_to_numpy_array(result)
         config.write.open()[out_chunk_key] = result
+    w_et = time.time() - w_st
+    bw_et = time.time() - bw_st
+
+    #storage = Storage()
+    with open(f'/tmp/total.pickle', 'wb') as f:
+        pickle.dump(bw_et, f)    
+    with open(f'/tmp/write.pickle', 'wb') as f:
+        pickle.dump(w_et, f)
+
+    if isinstance(args[0], np.ndarray):
+        with open(f'/tmp/read.pickle', 'wb') as f:
+            pickle.dump(r_et, f)
+        #storage.upload_file(f'/tmp/read_{id}.pickle', f'cubed-pau')
+
+    #storage.upload_file(f'/tmp/total_{id}.pickle', f'cubed-pau')
+    #storage.upload_file(f'/tmp/write_{id}.pickle', f'cubed-pau')
 
 
 def key_to_slices(
@@ -665,11 +698,13 @@ def make_blockwise_key_function(
     output: str,
     out_indices: Sequence[Union[str, int]],
     *arrind_pairs: Any,
-    numblocks: Dict[str, Tuple[int, ...]],
+    numblocks: Optional[Dict[str, Tuple[int, ...]]] = None,
     new_axes: Optional[Dict[int, int]] = None,
 ) -> Callable[[List[int]], Any]:
     """Make a function that is the equivalent of make_blockwise_graph."""
 
+    if numblocks is None:
+        raise ValueError("Missing required numblocks argument.")
     new_axes = new_axes or {}
     argpairs = list(toolz.partition(2, arrind_pairs))
 
@@ -721,7 +756,7 @@ def make_blockwise_key_function_flattened(
     output: str,
     out_indices: Sequence[Union[str, int]],
     *arrind_pairs: Any,
-    numblocks: Dict[str, Tuple[int, ...]],
+    numblocks: Optional[Dict[str, Tuple[int, ...]]] = None,
     new_axes: Optional[Dict[int, int]] = None,
 ) -> Callable[[List[int]], Any]:
     # TODO: make this a part of make_blockwise_key_function?

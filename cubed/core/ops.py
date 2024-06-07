@@ -10,7 +10,7 @@ from warnings import warn
 
 import numpy as np
 import zarr
-from tlz import concat, first, partition
+from tlz import concat, partition
 from toolz import accumulate, map
 from zarr.indexing import (
     IntDimIndexer,
@@ -20,6 +20,11 @@ from zarr.indexing import (
     is_slice,
     replace_ellipsis,
 )
+
+import os
+import pickle
+import time
+from lithops import Storage
 
 from cubed import config
 from cubed.backend_array_api import namespace as nxp
@@ -37,7 +42,7 @@ from cubed.utils import (
     offset_to_block_id,
     to_chunksize,
 )
-from cubed.vendor.dask.array.core import normalize_chunks
+from cubed.vendor.dask.array.core import common_blockdim, normalize_chunks
 from cubed.vendor.dask.array.utils import validate_axis
 from cubed.vendor.dask.blockwise import broadcast_dimensions, lol_product
 from cubed.vendor.dask.utils import has_keyword
@@ -571,6 +576,9 @@ def map_blocks(
 ) -> "Array":
     """Apply a function to corresponding blocks from multiple input arrays."""
 
+    if drop_axis is None:
+        drop_axis = []
+
     # Handle the case where an array is created by calling `map_blocks` with no input arrays
     if len(args) == 0:
         from cubed.array_api.creation_functions import empty_virtual_array
@@ -745,7 +753,7 @@ def map_direct(
         chunks=chunks,
         extra_source_arrays=args,
         extra_projected_mem=extra_projected_mem,
-        fusable=False,  # don't allow fusion with predecessors since side inputs are not accounted for
+        fusable=False,  # don't allow fusion since side inputs are not accounted for
         **kwargs,
     )
 
@@ -1245,11 +1253,17 @@ def partial_reduce(
 
 def _partial_reduce(arrays, reduce_func=None, initial_func=None, axis=None):
     # reduce each array in turn, accumulating in result
+    #print('-PARTIAL REDUCE-')
+    id = os.environ['__LITHOPS_SESSION_ID']
     assert not isinstance(
         arrays, list
     ), "partial reduce expects an iterator of array blocks, not a list"
     result = None
+    read_time = 0
+    st = time.time()
     for array in arrays:
+        et = time.time() - st
+        read_time += et
         if initial_func is not None:
             array = initial_func(array)
         reduced_chunk = reduce_func(array, axis=axis, keepdims=True)
@@ -1267,6 +1281,12 @@ def _partial_reduce(arrays, reduce_func=None, initial_func=None, axis=None):
             # only need to concatenate along first axis
             result = nxp.concat([result, reduced_chunk], axis=axis[0])
             result = reduce_func(result, axis=axis, keepdims=True)
+        st = time.time()
+    
+    #storage = Storage()
+    with open(f'/tmp/read.pickle', 'wb') as f:
+        pickle.dump(read_time, f)
+    # storage.upload_file(f'/tmp/read_{id}.pickle', f'cubed-pau')
 
     return result
 
@@ -1380,9 +1400,7 @@ def unify_chunks(*args: "Array", **kwargs):
         else:
             nameinds.append((a, ind))
 
-    chunkss = broadcast_dimensions(
-        nameinds, blockdim_dict, consolidate=smallest_blockdim
-    )
+    chunkss = broadcast_dimensions(nameinds, blockdim_dict, consolidate=common_blockdim)
 
     arrays = []
     for a, i in arginds:
@@ -1399,36 +1417,8 @@ def unify_chunks(*args: "Array", **kwargs):
             )
             if chunks != a.chunks and all(a.chunks):
                 # this will raise if chunks are not regular
-                # but this should never happen with smallest_blockdim
                 chunksize = to_chunksize(chunks)
                 arrays.append(rechunk(a, chunksize))
             else:
                 arrays.append(a)
     return chunkss, arrays
-
-
-def smallest_blockdim(blockdims):
-    """Find the smallest block dimensions from the list of block dimensions
-
-    Unlike Dask's common_blockdim, this returns regular chunks (assuming
-    regular chunks are passed in).
-    """
-    if not any(blockdims):
-        return ()
-    non_trivial_dims = {d for d in blockdims if len(d) > 1}
-    if len(non_trivial_dims) == 1:
-        return first(non_trivial_dims)
-    if len(non_trivial_dims) == 0:
-        return max(blockdims, key=first)
-
-    if len(set(map(sum, non_trivial_dims))) > 1:
-        raise ValueError("Chunks do not add up to same value", blockdims)
-
-    # find dims with the smallest first chunk
-    m = -1
-    out = None
-    for ntd in non_trivial_dims:
-        if m == -1 or ntd[0] < m:
-            m = ntd[0]
-            out = ntd
-    return out
