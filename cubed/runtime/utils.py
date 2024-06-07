@@ -4,6 +4,8 @@ from itertools import islice
 
 from cubed.runtime.types import OperationStartEvent, TaskEndEvent
 from cubed.utils import peak_measured_mem
+import pickle
+import os
 
 sym_counter = 0
 
@@ -25,11 +27,23 @@ def execute_with_stats(function, *args, **kwargs):
     result = function(*args, **kwargs)
     function_end_tstamp = time.time()
     peak_measured_mem_end = peak_measured_mem()
+
+    read_t = 0
+    write_t = 0
+    total_t = 0
+    if os.path.exists('/tmp/read.pickle'):
+        read_t = pickle.load(open('/tmp/read.pickle', 'rb'))
+        write_t = pickle.load(open('/tmp/write.pickle', 'rb'))
+        total_t = pickle.load(open('/tmp/total.pickle', 'rb'))
+
     return result, dict(
         function_start_tstamp=function_start_tstamp,
         function_end_tstamp=function_end_tstamp,
         peak_measured_mem_start=peak_measured_mem_start,
         peak_measured_mem_end=peak_measured_mem_end,
+        read_time=read_t,
+        write_time=write_t,
+        total_time=total_t,
     )
 
 
