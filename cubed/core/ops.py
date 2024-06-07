@@ -1286,6 +1286,7 @@ def _partial_reduce(arrays, reduce_func=None, initial_func=None, axis=None):
     #storage = Storage()
     with open(f'/tmp/read.pickle', 'wb') as f:
         pickle.dump(read_time, f)
+        print('dumped pickle file')
     # storage.upload_file(f'/tmp/read_{id}.pickle', f'cubed-pau')
 
     return result
